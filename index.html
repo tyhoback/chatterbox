@@ -223,6 +223,11 @@ html,body{height:100%;height:100dvh;background:var(--bg-0);color:var(--text-1);f
 .voice-room.game-active #participantsGrid{display:none}
 .game-hint{position:absolute;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.55);border:1px solid rgba(232,105,42,0.25);border-radius:6px;padding:6px 14px;font-size:11px;color:var(--text-3);white-space:nowrap;z-index:2;pointer-events:none;opacity:1;transition:opacity 2s}
 .game-hint.fade{opacity:0}
+.hint-mobile{display:none}
+@media(max-width:639px){.hint-desktop{display:none}.hint-mobile{display:inline}}
+.game-fire-btn{position:absolute;bottom:16px;right:16px;width:68px;height:68px;border-radius:50%;background:rgba(232,105,42,0.9);border:2px solid rgba(232,105,42,0.5);display:none;align-items:center;justify-content:center;font-size:26px;z-index:3;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;box-shadow:0 0 20px rgba(232,105,42,0.4);transition:transform 0.08s,opacity 0.08s}
+.game-fire-btn:active{transform:scale(0.9);opacity:0.8}
+@media(max-width:639px){.voice-room.game-active .game-fire-btn{display:flex}}
 
 /* ── GEOMETRIC BRANDING ── */
 /* Dot grid on join screen */
@@ -401,7 +406,8 @@ html,body{height:100%;height:100dvh;background:var(--bg-0);color:var(--text-1);f
     <div class="view active" id="viewVoice">
       <div class="voice-room">
         <canvas id="gameCanvas"></canvas>
-        <div class="game-hint" id="gameHint">Arrow keys · move &nbsp;|&nbsp; Space · shoot</div>
+        <div class="game-hint" id="gameHint"><span class="hint-desktop">Arrow keys · move &nbsp;|&nbsp; Space · shoot</span><span class="hint-mobile">Tap to move &nbsp;|&nbsp; 🔫 to shoot</span></div>
+        <button class="game-fire-btn" id="gameFireBtn" ontouchstart="event.preventDefault();_shoot()" onclick="_shoot()">🔫</button>
         <div class="voice-status-bar">
           <div class="voice-status-dot" id="voiceStatusDot"></div>
           <span id="voiceStatusText">Tap the mic to join voice</span>
@@ -834,6 +840,7 @@ const G = {
   projs: [],               // {id,x,y,vx,vy,owner}
   fx: [],                  // hit ripple effects {x,y,t}
   keys: new Set(),
+  target: null,            // tap-to-move destination {x,y}
   ch: null,                // supabase broadcast channel
   lastBcast: 0, lastShot: 0,
 };
@@ -877,6 +884,8 @@ function startGame(){
   window.addEventListener('keydown', _gKeyDown);
   window.addEventListener('keyup',   _gKeyUp);
   window.addEventListener('resize',  _resizeCanvas);
+  canvas.addEventListener('touchstart', _gTouch, {passive:false});
+  canvas.addEventListener('touchmove',  _gTouch, {passive:false});
   G.raf = requestAnimationFrame(_gLoop);
 }
 
@@ -889,6 +898,10 @@ function stopGame(){
   if(G.ch){
     G.ch.send({type:'broadcast',event:'leave',payload:{u:me.username}}).catch(()=>{});
     G.ch.unsubscribe(); G.ch = null;
+  }
+  if(canvas){
+    canvas.removeEventListener('touchstart', _gTouch);
+    canvas.removeEventListener('touchmove',  _gTouch);
   }
   window.removeEventListener('keydown', _gKeyDown);
   window.removeEventListener('keyup',   _gKeyUp);
@@ -907,6 +920,18 @@ function _respawn(){
     G.hp = 100; G.respawning = false;
     G.pos = { x:80+Math.random()*(G.canvas.width-160), y:WALL_TOP+60+Math.random()*(G.canvas.height-WALL_TOP-120) };
   }, 3000);
+}
+
+function _gTouch(e){
+  e.preventDefault();
+  if(G.respawning) return;
+  const rect = G.canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  const tx = (t.clientX - rect.left) * (G.canvas.width / rect.width);
+  const ty = (t.clientY - rect.top)  * (G.canvas.height / rect.height);
+  if(ty <= WALL_TOP) return;
+  G.target = {x: tx, y: ty};
+  G.angle = Math.atan2(ty - G.pos.y, tx - G.pos.x);
 }
 
 function _gKeyDown(e){
@@ -937,10 +962,18 @@ function _gLoop(){
 function _gUpdate(){
   const {keys, pos, canvas} = G;
   if(!G.respawning){
-    if(keys.has('ArrowLeft'))  { pos.x -= 3; G.angle = Math.PI; }
-    if(keys.has('ArrowRight')) { pos.x += 3; G.angle = 0; }
-    if(keys.has('ArrowUp'))    { pos.y -= 3; G.angle = -Math.PI/2; }
-    if(keys.has('ArrowDown'))  { pos.y += 3; G.angle =  Math.PI/2; }
+    // Keyboard
+    if(keys.has('ArrowLeft'))  { pos.x -= 3; G.angle = Math.PI; G.target=null; }
+    if(keys.has('ArrowRight')) { pos.x += 3; G.angle = 0;       G.target=null; }
+    if(keys.has('ArrowUp'))    { pos.y -= 3; G.angle = -Math.PI/2; G.target=null; }
+    if(keys.has('ArrowDown'))  { pos.y += 3; G.angle =  Math.PI/2; G.target=null; }
+    // Tap-to-move
+    if(G.target){
+      const dx = G.target.x - pos.x, dy = G.target.y - pos.y;
+      const dist = Math.hypot(dx, dy);
+      if(dist > 5){ pos.x += (dx/dist)*3; pos.y += (dy/dist)*3; }
+      else G.target = null;
+    }
     pos.x = Math.max(PLAYER_R, Math.min(canvas.width-PLAYER_R, pos.x));
     pos.y = Math.max(WALL_TOP+PLAYER_R, Math.min(canvas.height-PLAYER_R, pos.y));
   }
