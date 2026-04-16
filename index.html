@@ -214,6 +214,36 @@ html,body{height:100%;height:100dvh;background:var(--bg-0);color:var(--text-1);f
   .ctrl-inner{width:42px;height:42px;font-size:16px}
 }
 
+/* ── GEOMETRIC BRANDING ── */
+/* Dot grid on join screen */
+#joinScreen{background-image:radial-gradient(circle,rgba(232,105,42,0.2) 1.5px,transparent 1.5px);background-size:52px 52px}
+/* Diagonal stripe overlay on join screen */
+#joinScreen::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;
+  background:repeating-linear-gradient(45deg,var(--orange) 0,var(--orange) 10px,transparent 10px,transparent 30px);
+  opacity:0.03}
+/* Keep join card above the bg pseudo-elements */
+.join-card{position:relative;z-index:1}
+/* Corner bracket markers on join card */
+.join-card::before,.join-card::after{content:'';position:absolute;width:20px;height:20px;pointer-events:none}
+.join-card::before{top:-5px;left:-5px;border-top:2px solid var(--orange);border-left:2px solid var(--orange)}
+.join-card::after{bottom:-5px;right:-5px;border-bottom:2px solid var(--orange);border-right:2px solid var(--orange)}
+/* Subtle grid overlay on voice room */
+.voice-room{position:relative}
+.voice-room::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;
+  background-image:linear-gradient(rgba(232,105,42,0.05) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(232,105,42,0.05) 1px,transparent 1px);
+  background-size:64px 64px}
+.voice-room>*{position:relative;z-index:1}
+/* Corner bracket markers on participant cards */
+.participant::before,.participant::after{content:'';position:absolute;width:10px;height:10px;pointer-events:none;opacity:0.45}
+.participant::before{top:7px;left:7px;border-top:1.5px solid var(--orange);border-left:1.5px solid var(--orange)}
+.participant::after{bottom:7px;right:7px;border-bottom:1.5px solid var(--orange);border-right:1.5px solid var(--orange)}
+/* Diagonal stripe accent on desktop sidebar header */
+.desktop-server-header{position:relative;overflow:hidden}
+.desktop-server-header::after{content:'';position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(45deg,var(--orange) 0,var(--orange) 7px,transparent 7px,transparent 20px);
+  opacity:0.07}
+
 /* ── SETTINGS MODAL ── */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;opacity:0;pointer-events:none;transition:opacity 0.2s}
 .modal-overlay.open{opacity:1;pointer-events:all}
