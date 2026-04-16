@@ -562,8 +562,9 @@ async function joinVoice(roomName){
   setVoiceStatus('connecting','Connecting…');
   try {
     const res=await fetch('/api/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:me.username,room:roomName})});
-    if(!res.ok) throw new Error('Token request failed');
+    if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(`Token API ${res.status}: ${e.error||'unknown'}`);}
     const {token,url}=await res.json();
+    if(!token||!url) throw new Error('Token API returned no token/url — check LIVEKIT_* env vars in Vercel');
 
     livekitRoom=new LivekitClient.Room({adaptiveStream:true,dynacast:true});
 
@@ -588,7 +589,7 @@ async function joinVoice(roomName){
     renderParticipants();
   } catch(err){
     console.error('Voice failed:',err);
-    setVoiceStatus('error','Connection failed — check your LiveKit keys');
+    setVoiceStatus('error', err.message||'Connection failed');
     livekitRoom=null;
   }
 }
