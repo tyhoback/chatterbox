@@ -213,6 +213,29 @@ html,body{height:100%;height:100dvh;background:var(--bg-0);color:var(--text-1);f
   .voice-controls{padding:10px 20px}
   .ctrl-inner{width:42px;height:42px;font-size:16px}
 }
+
+/* ── SETTINGS MODAL ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;opacity:0;pointer-events:none;transition:opacity 0.2s}
+.modal-overlay.open{opacity:1;pointer-events:all}
+.modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-54%);z-index:101;width:min(420px,calc(100vw - 32px));background:var(--bg-2);border:1px solid var(--border);border-radius:12px;opacity:0;pointer-events:none;transition:opacity 0.2s,transform 0.2s}
+.modal.open{opacity:1;pointer-events:all;transform:translate(-50%,-50%)}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)}
+.modal-title{font-size:15px;font-weight:600;color:var(--text-1)}
+.modal-close{background:none;border:none;color:var(--text-3);cursor:pointer;font-size:18px;padding:2px 6px;border-radius:4px;line-height:1;transition:color 0.1s;font-family:inherit}
+.modal-close:hover{color:var(--text-1)}
+.modal-body{padding:20px;display:flex;flex-direction:column;gap:20px}
+.settings-section-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);margin-bottom:10px}
+.settings-field{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+.settings-field:last-child{margin-bottom:0}
+.settings-label{font-size:12px;font-weight:500;color:var(--text-2)}
+.settings-row{display:flex;gap:8px}
+.settings-input{flex:1;background:var(--bg-3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text-1);font-size:13px;font-family:inherit;outline:none;transition:border-color 0.15s}
+.settings-input:focus{border-color:var(--orange)}
+.settings-select{width:100%;background:var(--bg-3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text-1);font-size:13px;font-family:inherit;outline:none;cursor:pointer;transition:border-color 0.15s;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239e9189' d='M6 8L1 3h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+.settings-select:focus{border-color:var(--orange)}
+.settings-select:disabled{opacity:0.4;cursor:default}
+.settings-save-btn{background:var(--orange);border:none;border-radius:6px;padding:8px 16px;color:#fff;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;transition:opacity 0.1s}
+.settings-save-btn:hover{opacity:0.85}
 </style>
 </head>
 <body>
@@ -259,7 +282,7 @@ html,body{height:100%;height:100dvh;background:var(--bg-0);color:var(--text-1);f
       <div class="user-name" id="drawerUserName">—</div>
       <div class="user-tag">in Chatterbox</div>
     </div>
-    <div class="user-settings">⚙️</div>
+    <div class="user-settings" onclick="openSettings()">⚙️</div>
   </div>
 </div>
 
@@ -299,7 +322,7 @@ html,body{height:100%;height:100dvh;background:var(--bg-0);color:var(--text-1);f
       </div>
       <div class="desktop-user-controls">
         <div class="desktop-ucbtn" onclick="toggleMic()">🎙</div>
-        <div class="desktop-ucbtn">⚙️</div>
+        <div class="desktop-ucbtn" onclick="openSettings()">⚙️</div>
       </div>
     </div>
   </div>
@@ -656,6 +679,8 @@ function renderParticipants(){
         if(pub.track&&!pub.track.attachedElements.length){
           const audio=pub.track.attach();
           audio.volume=isDeafened?0:1;
+          audio.dataset.cbAudio='1';
+          if(selectedSpeakerId&&audio.setSinkId) audio.setSinkId(selectedSpeakerId).catch(()=>{});
           document.body.appendChild(audio);
         }
       });
@@ -751,6 +776,115 @@ window.addEventListener('resize',applyLayout);
 
 function autoResize(el){ el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,120)+'px'; }
 function handleChatKey(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendChatMessage(); } }
+
+// ── SETTINGS ─────────────────────────────────────────
+let selectedMicId = null;
+let selectedSpeakerId = null;
+
+function openSettings(){
+  if(!me) return;
+  document.getElementById('settingsUsername').value = me.username;
+  document.getElementById('settingsOverlay').classList.add('open');
+  document.getElementById('settingsModal').classList.add('open');
+  populateAudioDevices();
+}
+
+function closeSettings(){
+  document.getElementById('settingsOverlay').classList.remove('open');
+  document.getElementById('settingsModal').classList.remove('open');
+}
+
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeSettings(); });
+
+async function populateAudioDevices(){
+  try {
+    // Request permission so device labels are populated
+    await navigator.mediaDevices.getUserMedia({audio:true}).then(s=>s.getTracks().forEach(t=>t.stop())).catch(()=>{});
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs  = devices.filter(d=>d.kind==='audioinput');
+    const outputs = devices.filter(d=>d.kind==='audiooutput');
+
+    const micSel = document.getElementById('settingsMicInput');
+    const spkSel = document.getElementById('settingsSpeakerOutput');
+
+    micSel.innerHTML = inputs.map((d,i)=>
+      `<option value="${d.deviceId}"${d.deviceId===selectedMicId?' selected':''}>${d.label||'Microphone '+(i+1)}</option>`
+    ).join('');
+
+    if(outputs.length){
+      spkSel.disabled = false;
+      spkSel.innerHTML = outputs.map((d,i)=>
+        `<option value="${d.deviceId}"${d.deviceId===selectedSpeakerId?' selected':''}>${d.label||'Speaker '+(i+1)}</option>`
+      ).join('');
+    } else {
+      spkSel.disabled = true;
+      spkSel.innerHTML = '<option>Default output</option>';
+    }
+  } catch(e){ console.warn('Could not enumerate devices', e); }
+}
+
+function saveUsername(){
+  const raw = document.getElementById('settingsUsername').value.trim();
+  if(!raw || raw.length < 2) return;
+  me = { username: raw, initials: initials(raw), gradient: gradient(raw), color: nameColor(raw) };
+  localStorage.setItem('cb_username', raw);
+  ['drawerUserAvatar','desktopUserAvatar'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el){ el.style.background=me.gradient; el.textContent=me.initials; }
+  });
+  ['drawerUserName','desktopUserName'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.textContent=me.username;
+  });
+  closeSettings();
+}
+
+async function changeMicDevice(deviceId){
+  selectedMicId = deviceId;
+  if(livekitRoom){
+    try { await livekitRoom.switchActiveDevice('audioinput', deviceId); }
+    catch(e){ console.warn('mic switch failed', e); }
+  }
+}
+
+async function changeSpeakerOutput(deviceId){
+  selectedSpeakerId = deviceId;
+  document.querySelectorAll('[data-cb-audio]').forEach(async el=>{
+    if(el.setSinkId) try { await el.setSinkId(deviceId); } catch(e){ console.warn('setSinkId failed', e); }
+  });
+}
 </script>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settingsOverlay" onclick="closeSettings()"></div>
+<div class="modal" id="settingsModal">
+  <div class="modal-header">
+    <span class="modal-title">Settings</span>
+    <button class="modal-close" onclick="closeSettings()">✕</button>
+  </div>
+  <div class="modal-body">
+    <div>
+      <div class="settings-section-label">Account</div>
+      <div class="settings-field">
+        <label class="settings-label">Username</label>
+        <div class="settings-row">
+          <input class="settings-input" id="settingsUsername" type="text" maxlength="32" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')saveUsername()">
+          <button class="settings-save-btn" onclick="saveUsername()">Save</button>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="settings-section-label">Audio</div>
+      <div class="settings-field">
+        <label class="settings-label">Microphone</label>
+        <select class="settings-select" id="settingsMicInput" onchange="changeMicDevice(this.value)"></select>
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">Speaker Output</label>
+        <select class="settings-select" id="settingsSpeakerOutput" onchange="changeSpeakerOutput(this.value)"></select>
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>
