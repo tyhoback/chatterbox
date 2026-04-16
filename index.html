@@ -613,7 +613,9 @@ async function toggleDeafen(){
   isDeafened=!isDeafened;
   if(livekitRoom){
     livekitRoom.remoteParticipants.forEach(p=>{
-      p.audioTrackPublications.forEach(pub=>{ if(pub.track) pub.track.setVolume(isDeafened?0:1); });
+      p.audioTrackPublications.forEach(pub=>{
+        if(pub.track) pub.track.attachedElements.forEach(el=>{ el.volume=isDeafened?0:1; });
+      });
     });
   }
   updateDeafenBtn();
