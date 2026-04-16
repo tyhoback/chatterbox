@@ -214,6 +214,16 @@ html,body{height:100%;height:100dvh;background:var(--bg-0);color:var(--text-1);f
   .ctrl-inner{width:42px;height:42px;font-size:16px}
 }
 
+/* ── GAME CANVAS ── */
+#gameCanvas{position:absolute;inset:0;display:none;z-index:0;touch-action:none}
+.voice-room.game-active{padding:0;overflow:hidden;cursor:crosshair}
+.voice-room.game-active #gameCanvas{display:block}
+.voice-room.game-active .voice-status-bar{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:2;pointer-events:none;white-space:nowrap;min-width:200px;justify-content:center}
+.voice-room.game-active .room-label{display:none}
+.voice-room.game-active #participantsGrid{display:none}
+.game-hint{position:absolute;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.55);border:1px solid rgba(232,105,42,0.25);border-radius:6px;padding:6px 14px;font-size:11px;color:var(--text-3);white-space:nowrap;z-index:2;pointer-events:none;opacity:1;transition:opacity 2s}
+.game-hint.fade{opacity:0}
+
 /* ── GEOMETRIC BRANDING ── */
 /* Dot grid on join screen */
 #joinScreen{background-image:radial-gradient(circle,rgba(232,105,42,0.2) 1.5px,transparent 1.5px);background-size:52px 52px}
@@ -390,6 +400,8 @@ html,body{height:100%;height:100dvh;background:var(--bg-0);color:var(--text-1);f
     <!-- Voice -->
     <div class="view active" id="viewVoice">
       <div class="voice-room">
+        <canvas id="gameCanvas"></canvas>
+        <div class="game-hint" id="gameHint">Arrow keys · move &nbsp;|&nbsp; Space · shoot</div>
         <div class="voice-status-bar">
           <div class="voice-status-dot" id="voiceStatusDot"></div>
           <span id="voiceStatusText">Tap the mic to join voice</span>
@@ -640,6 +652,7 @@ async function joinVoice(roomName){
     updateMicBtn();
     setVoiceStatus('connected',`Connected to #${roomName}`);
     renderParticipants();
+    startGame();
   } catch(err){
     console.error('Voice failed:',err);
     setVoiceStatus('error', err.message||'Connection failed');
@@ -649,6 +662,7 @@ async function joinVoice(roomName){
 
 async function leaveVoice(){
   if(!livekitRoom) return;
+  stopGame();
   await livekitRoom.disconnect();
   livekitRoom=null; isMicOn=false; isDeafened=false;
   setVoiceStatus('','Tap the mic to join voice');
@@ -806,6 +820,284 @@ window.addEventListener('resize',applyLayout);
 
 function autoResize(el){ el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,120)+'px'; }
 function handleChatKey(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendChatMessage(); } }
+
+// ── GAME ENGINE ──────────────────────────────────────
+const PLAYER_R = 22;
+const PROJ_R   = 5;
+const PROJ_SPD = 8;
+const WALL_TOP = 68; // px reserved for the status bar wall
+
+const G = {
+  canvas: null, ctx: null, running: false, raf: null,
+  pos: {x:300, y:300}, angle: 0, hp: 100, respawning: false,
+  remote: new Map(),       // username → {x,y,angle,hp,initials}
+  projs: [],               // {id,x,y,vx,vy,owner}
+  fx: [],                  // hit ripple effects {x,y,t}
+  keys: new Set(),
+  ch: null,                // supabase broadcast channel
+  lastBcast: 0, lastShot: 0,
+};
+
+function startGame(){
+  const canvas = document.getElementById('gameCanvas');
+  if(!canvas) return;
+  G.canvas = canvas; G.ctx = canvas.getContext('2d');
+  _resizeCanvas();
+  G.pos = { x: 80 + Math.random()*(canvas.width-160), y: WALL_TOP+60 + Math.random()*(canvas.height-WALL_TOP-120) };
+  G.angle = 0; G.hp = 100; G.respawning = false;
+  G.remote.clear(); G.projs = []; G.fx = [];
+  G.running = true;
+  canvas.closest('.voice-room').classList.add('game-active');
+
+  // Fade out hint after 4s
+  const hint = document.getElementById('gameHint');
+  if(hint){ hint.classList.remove('fade'); setTimeout(()=>hint.classList.add('fade'), 4000); }
+
+  // Supabase broadcast for game state
+  G.ch = sb.channel('cb-game-lounge', { config:{ broadcast:{self:false} } });
+  G.ch
+    .on('broadcast',{event:'pos'},({payload:p})=>{
+      if(p.u===me.username) return;
+      const prev = G.remote.get(p.u)||{};
+      G.remote.set(p.u,{...prev, x:p.x, y:p.y, angle:p.a, hp:p.hp??100, initials:initials(p.u), username:p.u});
+    })
+    .on('broadcast',{event:'proj'},({payload:p})=>{
+      if(p.owner===me.username) return;
+      G.projs.push({id:p.id,x:p.x,y:p.y,vx:p.vx,vy:p.vy,owner:p.owner});
+    })
+    .on('broadcast',{event:'hit'},({payload:p})=>{
+      if(p.target!==me.username) return;
+      G.hp = Math.max(0, G.hp-25);
+      G.fx.push({x:G.pos.x, y:G.pos.y, t:1});
+      if(G.hp<=0 && !G.respawning) _respawn();
+    })
+    .on('broadcast',{event:'leave'},({payload:p})=>{ G.remote.delete(p.u); })
+    .subscribe();
+
+  window.addEventListener('keydown', _gKeyDown);
+  window.addEventListener('keyup',   _gKeyUp);
+  window.addEventListener('resize',  _resizeCanvas);
+  G.raf = requestAnimationFrame(_gLoop);
+}
+
+function stopGame(){
+  if(!G.running) return;
+  G.running = false;
+  if(G.raf) cancelAnimationFrame(G.raf);
+  const canvas = document.getElementById('gameCanvas');
+  if(canvas) canvas.closest('.voice-room').classList.remove('game-active');
+  if(G.ch){
+    G.ch.send({type:'broadcast',event:'leave',payload:{u:me.username}}).catch(()=>{});
+    G.ch.unsubscribe(); G.ch = null;
+  }
+  window.removeEventListener('keydown', _gKeyDown);
+  window.removeEventListener('keyup',   _gKeyUp);
+  window.removeEventListener('resize',  _resizeCanvas);
+}
+
+function _resizeCanvas(){
+  if(!G.canvas) return;
+  const r = G.canvas.parentElement.getBoundingClientRect();
+  G.canvas.width = r.width; G.canvas.height = r.height;
+}
+
+function _respawn(){
+  G.respawning = true; G.hp = 0;
+  setTimeout(()=>{
+    G.hp = 100; G.respawning = false;
+    G.pos = { x:80+Math.random()*(G.canvas.width-160), y:WALL_TOP+60+Math.random()*(G.canvas.height-WALL_TOP-120) };
+  }, 3000);
+}
+
+function _gKeyDown(e){
+  if(!G.running) return;
+  G.keys.add(e.key);
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+  if(e.key===' ') _shoot();
+}
+function _gKeyUp(e){ G.keys.delete(e.key); }
+
+function _shoot(){
+  if(G.respawning) return;
+  const now = Date.now();
+  if(now - G.lastShot < 280) return;
+  G.lastShot = now;
+  const p = { id:me.username+'_'+now, x:G.pos.x, y:G.pos.y,
+               vx:Math.cos(G.angle)*PROJ_SPD, vy:Math.sin(G.angle)*PROJ_SPD, owner:me.username };
+  G.projs.push(p);
+  G.ch?.send({type:'broadcast',event:'proj',payload:p}).catch(()=>{});
+}
+
+function _gLoop(){
+  if(!G.running) return;
+  _gUpdate(); _gRender();
+  G.raf = requestAnimationFrame(_gLoop);
+}
+
+function _gUpdate(){
+  const {keys, pos, canvas} = G;
+  if(!G.respawning){
+    if(keys.has('ArrowLeft'))  { pos.x -= 3; G.angle = Math.PI; }
+    if(keys.has('ArrowRight')) { pos.x += 3; G.angle = 0; }
+    if(keys.has('ArrowUp'))    { pos.y -= 3; G.angle = -Math.PI/2; }
+    if(keys.has('ArrowDown'))  { pos.y += 3; G.angle =  Math.PI/2; }
+    pos.x = Math.max(PLAYER_R, Math.min(canvas.width-PLAYER_R, pos.x));
+    pos.y = Math.max(WALL_TOP+PLAYER_R, Math.min(canvas.height-PLAYER_R, pos.y));
+  }
+
+  const dead = new Set();
+  G.projs.forEach((p,i)=>{
+    p.x += p.vx; p.y += p.vy;
+    if(p.x<0||p.x>canvas.width||p.y<WALL_TOP||p.y>canvas.height){ dead.add(i); return; }
+
+    // Remote proj hitting me
+    if(p.owner!==me.username && !G.respawning){
+      const d = Math.hypot(p.x-pos.x, p.y-pos.y);
+      if(d < PLAYER_R+PROJ_R){
+        dead.add(i);
+        G.hp = Math.max(0, G.hp-25);
+        G.fx.push({x:pos.x, y:pos.y, t:1});
+        if(G.hp<=0 && !G.respawning) _respawn();
+      }
+    }
+    // My proj hitting remote players
+    if(p.owner===me.username){
+      G.remote.forEach((rp,uname)=>{
+        if(rp.hp<=0||dead.has(i)) return;
+        if(Math.hypot(p.x-rp.x,p.y-rp.y) < PLAYER_R+PROJ_R){
+          dead.add(i);
+          G.fx.push({x:rp.x,y:rp.y,t:1});
+          G.ch?.send({type:'broadcast',event:'hit',payload:{target:uname,from:me.username}}).catch(()=>{});
+        }
+      });
+    }
+  });
+  G.projs = G.projs.filter((_,i)=>!dead.has(i));
+  G.fx = G.fx.filter(e=>{ e.t-=0.035; return e.t>0; });
+
+  // Broadcast position ~20fps
+  const now = Date.now();
+  if(now-G.lastBcast>50){
+    G.lastBcast = now;
+    G.ch?.send({type:'broadcast',event:'pos',payload:{u:me.username,x:pos.x,y:pos.y,a:G.angle,hp:G.hp}}).catch(()=>{});
+  }
+}
+
+function _gRender(){
+  const {ctx, canvas, pos} = G;
+
+  // Background
+  ctx.fillStyle = '#0e0d0c';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Grid
+  const gs = 64;
+  ctx.strokeStyle = 'rgba(232,105,42,0.07)'; ctx.lineWidth = 1;
+  for(let x=0;x<canvas.width;x+=gs){ ctx.beginPath();ctx.moveTo(x,WALL_TOP);ctx.lineTo(x,canvas.height);ctx.stroke(); }
+  for(let y=WALL_TOP;y<canvas.height;y+=gs){ ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke(); }
+
+  // Wall line (dashed)
+  ctx.strokeStyle='rgba(232,105,42,0.35)'; ctx.lineWidth=1; ctx.setLineDash([8,6]);
+  ctx.beginPath(); ctx.moveTo(0,WALL_TOP); ctx.lineTo(canvas.width,WALL_TOP); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Remote players
+  G.remote.forEach(rp=>{ if(rp.x&&rp.y) _drawPlayer(rp.x,rp.y,rp.angle,rp.username,rp.hp??100,false); });
+
+  // My player
+  if(!G.respawning) _drawPlayer(pos.x,pos.y,G.angle,me.username,G.hp,true);
+
+  // Projectiles
+  ctx.shadowColor='#e8692a'; ctx.shadowBlur=10;
+  G.projs.forEach(p=>{
+    ctx.beginPath(); ctx.arc(p.x,p.y,PROJ_R,0,Math.PI*2);
+    ctx.fillStyle = p.owner===me.username ? '#e8692a' : '#e05555';
+    ctx.fill();
+  });
+  ctx.shadowBlur=0;
+
+  // Hit ripples
+  G.fx.forEach(e=>{
+    ctx.strokeStyle=`rgba(255,90,90,${e.t})`; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(e.x,e.y,PLAYER_R*(2.2-e.t),0,Math.PI*2); ctx.stroke();
+  });
+
+  // HUD
+  _drawHUD();
+}
+
+function _drawPlayer(x,y,angle,username,hp,isMe){
+  const ctx = G.ctx;
+  const [c1,c2] = colorPair(username);
+
+  // Direction arrow
+  ctx.save(); ctx.translate(x,y); ctx.rotate(angle);
+  ctx.beginPath(); ctx.moveTo(PLAYER_R+2,0); ctx.lineTo(PLAYER_R+10,-5); ctx.lineTo(PLAYER_R+10,5); ctx.closePath();
+  ctx.fillStyle = isMe ? 'rgba(232,105,42,0.85)' : 'rgba(255,255,255,0.4)';
+  ctx.fill(); ctx.restore();
+
+  // Outer ring
+  ctx.beginPath(); ctx.arc(x,y,PLAYER_R+4,0,Math.PI*2);
+  ctx.strokeStyle = isMe ? `rgba(232,105,42,${0.3+hp/100*0.7})` : 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = isMe ? 2 : 1.5; ctx.stroke();
+
+  // Avatar fill
+  const grd = ctx.createLinearGradient(x-PLAYER_R,y-PLAYER_R,x+PLAYER_R,y+PLAYER_R);
+  grd.addColorStop(0,c1); grd.addColorStop(1,c2);
+  ctx.globalAlpha = hp<=0 ? 0.2 : 0.35 + (hp/100)*0.65;
+  ctx.beginPath(); ctx.arc(x,y,PLAYER_R,0,Math.PI*2);
+  ctx.fillStyle = grd; ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // Initials
+  ctx.fillStyle = hp<=0 ? 'rgba(255,255,255,0.3)' : '#fff';
+  ctx.font = `bold ${Math.round(PLAYER_R*0.68)}px 'DM Sans',sans-serif`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(initials(username),x,y+1);
+
+  // HP bar
+  if(hp<100&&hp>0){
+    const bw=PLAYER_R*2, bx=x-PLAYER_R, by=y+PLAYER_R+7;
+    ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(bx,by,bw,4);
+    ctx.fillStyle = hp>60?'#5cb87a':hp>30?'#e8692a':'#e05555';
+    ctx.fillRect(bx,by,bw*(hp/100),4);
+  }
+
+  // Username label
+  ctx.fillStyle='rgba(255,255,255,0.55)';
+  ctx.font=`10px 'DM Sans',sans-serif`; ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillText(username,x,y+PLAYER_R+14);
+}
+
+function _drawHUD(){
+  const {ctx,canvas} = G;
+  // HP panel
+  _roundRect(12,canvas.height-46,108,34,6);
+  ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fill();
+  ctx.strokeStyle='rgba(232,105,42,0.2)'; ctx.lineWidth=1; ctx.stroke();
+  const hpColor = G.hp>60?'#5cb87a':G.hp>30?'#e8692a':'#e05555';
+  ctx.fillStyle=hpColor; ctx.font='bold 13px "DM Mono",monospace';
+  ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText(`HP  ${G.respawning?'---':G.hp}`,22,canvas.height-29);
+
+  if(G.respawning){
+    ctx.fillStyle='rgba(0,0,0,0.5)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='rgba(224,85,85,0.9)';
+    ctx.font='bold 16px "DM Sans",sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('ELIMINATED — RESPAWNING…',canvas.width/2,canvas.height/2);
+  }
+}
+
+function _roundRect(x,y,w,h,r){
+  const ctx=G.ctx;
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r); ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h); ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r); ctx.arcTo(x,y,x+r,y,r); ctx.closePath();
+}
 
 // ── SETTINGS ─────────────────────────────────────────
 let selectedMicId = null;
