@@ -23,17 +23,14 @@ git push -u origin main
 
 | Name | Value |
 |------|-------|
-| `LIVEKIT_API_KEY` | APIS5NtuNZ6Jm8L |
-| `LIVEKIT_API_SECRET` | fgLe46fsfe1vWK9EdOp46ZIcGyJEx63Oee9xZ8nyEnfb |
-| `LIVEKIT_URL` | wss://chatterbox-62tuqlm7.livekit.cloud |
+| `LIVEKIT_API_KEY` | your LiveKit API key |
+| `LIVEKIT_API_SECRET` | your LiveKit API secret |
+| `LIVEKIT_URL` | wss://your-project.livekit.cloud |
+| `SUPABASE_URL` | your Supabase project URL |
+| `SUPABASE_ANON_KEY` | your Supabase anon key |
 
 4. Click Deploy → done!
 
 ## Step 3 — Share the link
 
 Vercel gives you a URL like `https://chatterbox-xxx.vercel.app` — send it to your friends.
-
----
-
-Note: Remember to regenerate your LiveKit secret key since it was shared in chat.
-Go to LiveKit Dashboard → Settings → Keys → delete + recreate, then update the Vercel env var.
